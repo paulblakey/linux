@@ -5,6 +5,7 @@
 #include <linux/list.h>
 #include <net/flow_dissector.h>
 #include <linux/rhashtable.h>
+#include "uapi/linux/netfilter/nf_conntrack_tuple_common.h"
 
 struct flow_match {
 	struct flow_dissector	*dissector;
@@ -135,6 +136,7 @@ enum flow_action_id {
 	FLOW_ACTION_SAMPLE,
 	FLOW_ACTION_POLICE,
 	FLOW_ACTION_CT,
+	FLOW_ACTION_CT_METADATA,
 	FLOW_ACTION_MPLS_PUSH,
 	FLOW_ACTION_MPLS_POP,
 	FLOW_ACTION_MPLS_MANGLE,
@@ -192,7 +194,13 @@ struct flow_action_entry {
 		struct {				/* FLOW_ACTION_CT */
 			int action;
 			u16 zone;
+			struct flow_block *block;
 		} ct;
+		struct {
+			u32 mark;
+			u32 labels[4];
+			u16 zone;
+		} ct_metadata;
 		struct {				/* FLOW_ACTION_MPLS_PUSH */
 			u32		label;
 			__be16		proto;
@@ -346,6 +354,12 @@ enum flow_cls_command {
 	FLOW_CLS_TMPLT_DESTROY,
 };
 
+enum ct_flow_command { /* Based on enum flow_cls_command */
+	CT_FLOW_ADD,
+	CT_FLOW_DEL,
+	CT_FLOW_STATS,
+};
+
 struct flow_cls_common_offload {
 	u32 chain_index;
 	__be16 protocol;
@@ -360,6 +374,23 @@ struct flow_cls_offload {
 	struct flow_rule *rule;
 	struct flow_stats stats;
 	u32 classid;
+};
+
+#define MAX_CT_FLOW_OFFLOAD_ACTS 3
+struct ct_flow_offload { /* Based on struct flow_cls_offload */
+	struct flow_block *block;
+	struct ct_flow_table *ft;
+	enum ct_flow_command command;
+	struct flow_stats stats; /* Valid for CT_FLOW_STATS command */
+	unsigned long cookie;
+
+	/* Keep this two together. */
+	struct flow_rule rule;
+	struct flow_action_entry rule_action[MAX_CT_FLOW_OFFLOAD_ACTS];
+
+	/* Debug: */
+	struct nf_conn *ct;
+	enum ip_conntrack_dir dir;
 };
 
 static inline struct flow_rule *

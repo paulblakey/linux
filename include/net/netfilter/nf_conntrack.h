@@ -55,6 +55,11 @@ struct nf_conntrack_net {
 #include <net/netfilter/ipv4/nf_conntrack_ipv4.h>
 #include <net/netfilter/ipv6/nf_conntrack_ipv6.h>
 
+enum offload_event {
+	OFFLOAD_STATS,
+	OFFLOAD_DEL,
+};
+
 struct nf_conn {
 	/* Usage count in here is 1 for hash table, 1 per skb,
 	 * plus 1 for any connection(s) we are `master' for
@@ -79,6 +84,11 @@ struct nf_conn {
 
 	/* Have we seen traffic both ways yet? (bitset) */
 	unsigned long status;
+
+	int __rcu (*offload_handler)(struct nf_conn *ct,
+				     enum offload_event event,
+				     void *priv);
+	void *offload_priv;
 
 	u16		cpu;
 	possible_net_t ct_net;
@@ -267,9 +277,17 @@ static inline unsigned long nf_ct_expires(const struct nf_conn *ct)
 	return timeout > 0 ? timeout : 0;
 }
 
-static inline bool nf_ct_is_expired(const struct nf_conn *ct)
+static inline bool __nf_ct_is_expired(const struct nf_conn *ct)
 {
 	return (__s32)(ct->timeout - nfct_time_stamp) <= 0;
+
+}
+
+void nf_ct_offload_timeout(struct nf_conn *ct);
+static inline bool nf_ct_is_expired(const struct nf_conn *ct)
+{
+	nf_ct_offload_timeout((struct nf_conn *) ct);
+	return __nf_ct_is_expired(ct);
 }
 
 /* use after obtaining a reference count */

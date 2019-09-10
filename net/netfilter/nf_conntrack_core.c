@@ -597,6 +597,10 @@ destroy_conntrack(struct nf_conntrack *nfct)
 {
 	struct nf_conn *ct = (struct nf_conn *)nfct;
 
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ %px use: %d, status: %lu\n", __FILE__, __LINE__, __func__,
+		       ct, ct->ct_general.use, ct->status);
+
 	pr_debug("destroy_conntrack(%p)\n", ct);
 	WARN_ON(atomic_read(&nfct->use) != 0);
 
@@ -656,8 +660,27 @@ bool nf_ct_delete(struct nf_conn *ct, u32 portid, int report)
 {
 	struct nf_conn_tstamp *tstamp;
 
+	int (*offload_handler)(struct nf_conn *ct,
+			       enum offload_event event,
+			       void *priv);
+
+
 	if (test_and_set_bit(IPS_DYING_BIT, &ct->status))
 		return false;
+
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ %px use: %d, status: %lu, portid: %d, report: %d, handler: %px,  timeout: %d\n", __FILE__, __LINE__, __func__,
+		       ct, ct->ct_general.use, ct->status, portid, report, ct->offload_handler, jiffies_to_msecs(ct->timeout - nfct_time_stamp)/1000);
+
+	if (test_bit(IPS_OFFLOAD_BIT, &ct->status)) {
+		rcu_read_lock();
+		offload_handler = rcu_dereference(ct->offload_handler);
+		printk(KERN_ERR "%s %d %s @@ %px use: %d, status: %lu, calling DEL() on offload_handler: %px\n", __FILE__, __LINE__, __func__,
+		       ct, ct->ct_general.use, ct->status, offload_handler);
+		if (offload_handler)
+			offload_handler(ct, OFFLOAD_DEL, ct->offload_priv);
+		rcu_read_unlock();
+	}
 
 	tstamp = nf_conn_tstamp_find(ct);
 	if (tstamp && tstamp->stop == 0)
@@ -712,6 +735,10 @@ nf_ct_match(const struct nf_conn *ct1, const struct nf_conn *ct2)
 /* caller must hold rcu readlock and none of the nf_conntrack_locks */
 static void nf_ct_gc_expired(struct nf_conn *ct)
 {
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ %px use: %d, status: %lu,  offload_handler: %px EXPIRED (timeout: %d)\n", __FILE__, __LINE__, __func__,
+		       ct, ct->ct_general.use, ct->status, ct->offload_handler, jiffies_to_msecs(ct->timeout - nfct_time_stamp)/1000);
+
 	if (!atomic_inc_not_zero(&ct->ct_general.use))
 		return;
 
@@ -1212,11 +1239,34 @@ static bool gc_worker_can_early_drop(const struct nf_conn *ct)
  * us a check for the IPS_OFFLOAD_BIT from the packet path via
  * nf_ct_is_expired().
  */
-static void nf_ct_offload_timeout(struct nf_conn *ct)
+void nf_ct_offload_timeout(struct nf_conn *ct)
 {
-	if (nf_ct_expires(ct) < DAY / 2)
-		ct->timeout = nfct_time_stamp + DAY;
+	int (*offload_handler)(struct nf_conn *ct,
+			       enum offload_event event,
+			       void *priv);
+
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ ct: %px, use: %d, status: %lu, handler: %px, timeout: %d\n", __FILE__, __LINE__, __func__, ct, ct->ct_general.use, ct->status, ct->offload_handler, jiffies_to_msecs(ct->timeout - nfct_time_stamp)/1000);
+
+	if (!test_bit(IPS_OFFLOAD_BIT, &ct->status))
+		return;
+
+	if (!atomic_inc_not_zero(&ct->ct_general.use))
+		return;
+
+	rcu_read_lock();
+	offload_handler = rcu_dereference(ct->offload_handler);
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ ct: %px, use: %d, status: %lu, handler: %px, get reft(), calling stats(), then put(ct)\n", __FILE__, __LINE__, __func__, ct, ct->ct_general.use, ct->status, ct->offload_handler);
+	if (offload_handler)
+		offload_handler(ct, OFFLOAD_STATS, ct->offload_priv);
+	rcu_read_unlock();
+
+	if (nf_ct_zone(ct)->id)
+		printk(KERN_ERR "%s %d %s @@ ct: %px, use: %d, status: %lu, handler: %px, after stats(), timeout: %d\n", __FILE__, __LINE__, __func__, ct, ct->ct_general.use, ct->status, ct->offload_handler, jiffies_to_msecs(ct->timeout - nfct_time_stamp)/1000);
+	nf_ct_put(ct);
 }
+EXPORT_SYMBOL_GPL(nf_ct_offload_timeout);
 
 static void gc_worker(struct work_struct *work)
 {
@@ -1254,12 +1304,13 @@ static void gc_worker(struct work_struct *work)
 			tmp = nf_ct_tuplehash_to_ctrack(h);
 
 			scanned++;
-			if (test_bit(IPS_OFFLOAD_BIT, &tmp->status)) {
-				nf_ct_offload_timeout(tmp);
-				continue;
-			}
+			if (nf_ct_zone(tmp)->id)
+				printk(KERN_ERR "%s %d %s @@ scanning: %d, i=%d, hashsz: %d, ct: %px, use: %d, status: %lu, handler: %px, calling timeout(), timeout: %d\n", __FILE__, __LINE__, __func__, scanned, i, hashsz, tmp, tmp->ct_general.use, tmp->status, tmp->offload_handler, jiffies_to_msecs(tmp->timeout - nfct_time_stamp)/1000);
+			nf_ct_offload_timeout(tmp);
 
 			if (nf_ct_is_expired(tmp)) {
+				if (nf_ct_zone(tmp)->id)
+					printk(KERN_ERR "%s %d %s @@ scanning: %d, i=%d, hashsz: %d, ct: %px, use: %d, status: %lu, handler: %px, expired\n", __FILE__, __LINE__, __func__, scanned, i, hashsz, tmp, tmp->ct_general.use, tmp->status, tmp->offload_handler);
 				nf_ct_gc_expired(tmp);
 				expired_count++;
 				continue;
@@ -1284,6 +1335,8 @@ static void gc_worker(struct work_struct *work)
 			if (gc_worker_can_early_drop(tmp))
 				nf_ct_kill(tmp);
 
+			if (nf_ct_zone(tmp)->id)
+				printk(KERN_ERR "%s %d %s @@ scanning: %d, i=%d, hashsz: %d, ct: %px, use: %d, status: %lu, handler: %px, put tmp(), timeout: %d\n", __FILE__, __LINE__, __func__, scanned, i, hashsz, tmp, tmp->ct_general.use, tmp->status, tmp->offload_handler, jiffies_to_msecs(tmp->timeout - nfct_time_stamp)/1000);
 			nf_ct_put(tmp);
 		}
 

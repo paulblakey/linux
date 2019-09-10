@@ -27,8 +27,19 @@ struct tcf_ct_params {
 	struct rcu_head rcu;
 };
 
+struct ct_flow_table {
+	struct rhash_head node; /* In zones tables */
+
+	struct rcu_work rwork;
+	struct rhashtable table;
+	struct flow_block block;
+	u16 zone;
+	u32 ref;
+};
+
 struct tcf_ct {
 	struct tc_action common;
+	struct ct_flow_table *ft;
 	struct tcf_ct_params __rcu *params;
 };
 
@@ -46,9 +57,19 @@ static inline int tcf_ct_action(const struct tc_action *a)
 	return to_ct_params(a)->ct_action;
 }
 
+static inline struct flow_block *tcf_ct_block(const struct tc_action *a)
+{
+	struct tcf_ct *ct = to_ct(a);
+
+	return (ct->ft ? &ct->ft->block : NULL);
+}
+
 #else
 static inline uint16_t tcf_ct_zone(const struct tc_action *a) { return 0; }
 static inline int tcf_ct_action(const struct tc_action *a) { return 0; }
+static inline struct flow_block *tcf_ct_block(const struct tc_action *a) {
+	return NULL;
+}
 #endif /* CONFIG_NF_CONNTRACK */
 
 static inline bool is_tcf_ct(const struct tc_action *a)

@@ -3418,6 +3418,7 @@ int tc_setup_flow_action(struct flow_action *flow_action,
 			entry->id = FLOW_ACTION_CT;
 			entry->ct.action = tcf_ct_action(act);
 			entry->ct.zone = tcf_ct_zone(act);
+			entry->ct.block = tcf_ct_block(act);
 		} else if (is_tcf_mpls(act)) {
 			switch (tcf_mpls_action(act)) {
 			case TCA_MPLS_ACT_PUSH:
